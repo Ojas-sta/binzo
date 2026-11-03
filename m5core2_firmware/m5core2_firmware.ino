@@ -149,6 +149,12 @@ unsigned long lastM5Heartbeat = 0;
 bool isM5CamOnline   = false;
 String m5SerialBuffer = "";
 
+// Camera Vision Line Following state (from K210 / temu_line_follower)
+bool camMecanumActive = false;
+unsigned long lastCamLineTime = 0;
+int camVx = 0, camVy = 0, camYaw = 0;
+int8_t camM0 = 0, camM1 = 0, camM2 = 0, camM3 = 0;
+
 // ----------------------------------------------------------------------------
 // GLOBAL OBJECTS & STATE
 // ----------------------------------------------------------------------------
@@ -572,11 +578,12 @@ void updateAutonomousMission() {
                 personConfidenceStreak = 0;
             }
 
-            // Proportional Black Line Following via 5-Channel Multiple Line Follower
-            if (isLineDetected) {
+            // Camera Vision Line Follower vs 5-Channel Multiple Line Follower
+            if (camMecanumActive && (currentMillis - lastCamLineTime < 350)) {
+                // Actively driven by camera's vision movement vectors (handled in parseM5Packet)
+            } else if (isLineDetected) {
+                // 5-Channel Multiple Line Follower (OneWire Pin 26)
                 // linePosition: -4 (far right) to +4 (far left), 0 centered
-                // Positive position means line is towards left -> rotate CCW (-yaw) to center
-                // Negative position means line is towards right -> rotate CW (+yaw) to center
                 int steer = constrain(-linePosition * 7, -32, 32);
                 driveMecanum(PATROL_SPEED, 0, steer);
             } else {
@@ -801,6 +808,33 @@ void parseM5Packet(const String& pkt) {
         m5HumanDetected = false;
         m5PersonCount = 0;
         lastM5Heartbeat = millis();
+    } else if (pkt.startsWith("BINZO:MEC,")) {
+        // Format: BINZO:MEC,<vx>,<vy>,<yaw>,<m0>,<m1>,<m2>,<m3>
+        int c1 = pkt.indexOf(',');
+        int c2 = pkt.indexOf(',', c1 + 1);
+        int c3 = pkt.indexOf(',', c2 + 1);
+        int c4 = pkt.indexOf(',', c3 + 1);
+        int c5 = pkt.indexOf(',', c4 + 1);
+        int c6 = pkt.indexOf(',', c5 + 1);
+        int c7 = pkt.indexOf(',', c6 + 1);
+
+        if (c6 != -1) {
+            camVx  = pkt.substring(c1 + 1, c2).toInt();
+            camVy  = pkt.substring(c2 + 1, c3).toInt();
+            camYaw = pkt.substring(c3 + 1, c4).toInt();
+            camM0  = (int8_t)pkt.substring(c4 + 1, c5).toInt();
+            camM1  = (int8_t)pkt.substring(c5 + 1, c6).toInt();
+            camM2  = (c7 != -1) ? (int8_t)pkt.substring(c6 + 1, c7).toInt() : (int8_t)pkt.substring(c6 + 1).toInt();
+            camM3  = (c7 != -1) ? (int8_t)pkt.substring(c7 + 1).toInt() : 0;
+
+            camMecanumActive = true;
+            lastCamLineTime = millis();
+            lastM5Heartbeat = millis();
+
+            if (isAutonomousMode && !isEmergencyStop && autoState == AUTO_LINE_PATROL) {
+                applyMotorSpeeds(camM0 * INV_FL, camM1 * INV_FR, camM2 * INV_RL, camM3 * INV_RR);
+            }
+        }
     }
 }
 
