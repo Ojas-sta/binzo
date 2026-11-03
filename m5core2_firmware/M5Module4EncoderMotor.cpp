@@ -1,3 +1,9 @@
+/*
+ * Subsystem: 4-Channel Encoder Motor & Servo Driver Implementation
+ * Architecture: Powered by cl0ud (https://github.com/Ojas-sta/cl0ud-brand-engineering)
+ * Co-Engineered by: Ojas Singh <ojasctc@gmail.com>
+ */
+
 #include "M5Module4EncoderMotor.h"
 
 #define MAX(in, max)            (((in) > (max)) ? (in) : (max))
@@ -92,6 +98,18 @@ int8_t M5Module4EncoderMotor::getMotorSpeed(uint8_t index) {
 
     _i2c.readBytes(_addr, addr, &read_data, 1);
     return read_data;
+}
+
+void M5Module4EncoderMotor::setServoAngle(uint8_t index, uint8_t angle) {
+    index = checkIndex(index);
+    if (angle > 180) angle = 180;
+    _i2c.writeByte(_addr, MODULE_4ENCODERMOTOR_SERVO_ANGLE_ADDR + index, angle);
+}
+
+void M5Module4EncoderMotor::setServoPulse(uint8_t index, uint16_t pulse) {
+    index = checkIndex(index);
+    uint8_t buf[2] = {(uint8_t)(pulse >> 8), (uint8_t)(pulse & 0xFF)};
+    _i2c.writeBytes(_addr, MODULE_4ENCODERMOTOR_SERVO_PULSE_ADDR + 2 * index, buf, 2);
 }
 
 /**

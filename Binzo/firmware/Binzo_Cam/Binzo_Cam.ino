@@ -165,6 +165,18 @@ void handleRoot() {
   html += "<div class='status'>Detection: " + String(isHumanDetected ? "HUMAN PRESENT" : "CLEAR") + "</div>";
   html += "<img id='snap' src='/capture' width='320' height='240'><br><br>";
   html += "<p>RSSI: " + String(WiFi.RSSI()) + " dBm | IP: " + WiFi.localIP().toString() + "</p>";
+  html += "<div style='margin-top:20px;padding:12px 18px;border:1px solid #333;border-radius:14px;background:#111;display:inline-block;max-width:320px;text-align:center;'>";
+  html += "<div style='display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;letter-spacing:0.06em;color:#f8fafc;'>";
+  html += "<span>POWERED BY <strong style='color:#00E5FF;'>cl0ud</strong></span>";
+  html += "<svg width='20' height='13' viewBox='0 0 608 408' fill='none' xmlns='http://www.w3.org/2000/svg' style='vertical-align:middle;'>";
+  html += "<path stroke='#38BDF8' stroke-width='40' stroke-linejoin='round' fill='none' d='M 309.8 1.5 c -23.8 3.0 -45.7 11.0 -65.4 23.8 -16.7 10.8 -31.5 24.8 -42.8 40.3 l -5.5 7.6 -5.1 -1.4 c -7.4 -2.1 -26.8 -2.8 -36.7 -1.3 -39.4 5.7 -70.9 32.3 -83.0 70.0 l -2.7 8.5 -8.8 6.2 c -38.8 27.0 -59.7 66.9 -59.7 113.8 -0.1 22.0 4.3 40.6 14.2 61.0 6.8 14.0 15.6 25.8 28.0 37.8 19.9 19.2 41.2 30.5 68.4 36.4 6.9 1.5 13.4 1.8 40.7 1.8 35.1 -0.0 39.2 -0.4 55.4 -5.7 34.2 -11.0 63.0 -34.9 96.1 -79.7 37.2 -50.3 44.9 -60.4 55.3 -72.2 22.3 -25.5 45.9 -42.4 72.3 -51.7 11.5 -4.1 22.8 -5.6 35.3 -4.9 11.9 0.7 19.5 2.6 29.1 7.2 19.6 9.5 33.7 26.4 40.7 48.5 2.0 6.4 2.3 9.5 2.3 21.5 -0.1 13.2 -0.3 14.5 -3.5 23.9 -7.1 20.9 -21.6 37.0 -41.5 46.2 -14.9 6.9 -13.3 6.7 -83.5 7.2 l -63.5 0.4 -13.5 18.0 c -7.4 9.9 -18.2 23.4 -23.8 30.0 l -10.4 11.9 90.9 -0.4 c 89.0 -0.3 91.0 -0.4 99.3 -2.5 19.3 -4.8 31.9 -10.5 49.1 -22.0 47.4 -31.7 69.8 -91.1 55.6 -147.2 -12.3 -48.2 -49.8 -85.9 -98.0 -98.4 l -9.0 -2.4 -2.3 -9.8 c -2.9 -12.7 -7.1 -24.0 -13.9 -37.3 -22.0 -42.6 -62.3 -73.3 -109.0 -83.1 -11.5 -2.4 -39.4 -3.5 -51.1 -2.0 z'/>";
+  html += "</svg>";
+  html += "</div>";
+  html += "<div style='height:1px;background:#262626;margin:8px 0;'></div>";
+  html += "<div style='font-size:10px;letter-spacing:0.1em;color:#888;text-transform:uppercase;'>CO-ENGINEERED BY</div>";
+  html += "<div style='font-size:13px;font-weight:bold;color:#fff;margin-top:2px;'><a href='https://github.com/Ojas-sta' target='_blank' rel='noopener noreferrer' style='color:#fff;text-decoration:none;'>OJAS SINGH</a></div>";
+  html += "<div style='font-size:9px;color:#666;margin-top:2px;'><a href='https://github.com/Ojas-sta/cl0ud-brand-engineering' target='_blank' rel='noopener noreferrer' style='color:#888;text-decoration:none;'>cl0ud brand engineering</a></div>";
+  html += "</div>";
   html += "</div></body></html>";
 
   server.send(200, "text/html", html);

@@ -1,3 +1,9 @@
+/*
+ * Subsystem: 4-Channel Encoder Motor & Servo Driver
+ * Architecture: Powered by cl0ud (https://github.com/Ojas-sta/cl0ud-brand-engineering)
+ * Co-Engineered by: Ojas Singh <ojasctc@gmail.com>
+ */
+
 #ifndef _M5_MODULE_4ENCODERMOTOR_H_
 #define _M5_MODULE_4ENCODERMOTOR_H_
 
@@ -53,6 +59,9 @@ class M5Module4EncoderMotor {
 
     void setMotorSpeed(uint8_t index, int8_t duty);
     int8_t getMotorSpeed(uint8_t index);
+
+    void setServoAngle(uint8_t index, uint8_t angle);
+    void setServoPulse(uint8_t index, uint16_t pulse);
 
     int8_t getMotorSpeed20MS(uint8_t index);
 

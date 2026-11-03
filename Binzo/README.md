@@ -1,5 +1,8 @@
 # BINZO — Smart Autonomous Dustbin Robot
 
+[![Powered by cl0ud](https://img.shields.io/badge/Powered%20by-cl0ud-00E5FF?style=for-the-badge&logoColor=0B0F19&labelColor=0B0F19)](https://github.com/Ojas-sta/cl0ud-brand-engineering)
+[![Co-engineered by Ojas Singh](https://img.shields.io/badge/Co--engineered%20by-Ojas%20Singh-1E3A8A?style=for-the-badge&logoColor=white&labelColor=0B0F19)](https://github.com/Ojas-sta)
+
 BINZO is a smart, autonomous robotic dustbin built with dual ESP32 microcontrollers. It follows black line tracks with infrared sensors, detects approaching people with an ESP32-CAM and ultrasonic proximity fallback, opens its motorized lid automatically, and communicates over ESP-NOW and Wi-Fi.
 
 ---
@@ -124,3 +127,18 @@ binzo/
 3. Select Board: **AI Thinker ESP32-CAM**.
 4. Enable **PSRAM: Enabled**, Partition Scheme: **Huge APP (3MB No OTA / 1MB SPIFFS)**.
 5. Flash, disconnect GPIO 0 from GND, and press RESET.
+
+---
+
+## 🤝 Engineering Attribution & Credits
+
+- **Original Project & Concept:** Binzo Team (Shashank Jangid & contributors)
+- **M5Core2 Mecanum Architecture & FSM:** Co-engineered by **Ojas Singh** | Powered by **cl0ud** ([cl0ud Brand Engineering](https://github.com/Ojas-sta/cl0ud-brand-engineering))
+- **Vision Subsystem (K210 YOLOv2 Tracking):** Co-engineered by **Ojas Singh** | Powered by **cl0ud**
+- **5-Channel Line Follower & Odometry:** Co-engineered by **Ojas Singh** | Powered by **cl0ud**
+
+<div align="center">
+  <a href="https://github.com/Ojas-sta/cl0ud-brand-engineering">
+    <img src="https://raw.githubusercontent.com/Ojas-sta/cl0ud-brand-engineering/main/assets/badges/cl0ud-credit-card.svg" alt="Powered by cl0ud | Co-engineered by Ojas Singh" width="100%" style="max-width: 820px;" />
+  </a>
+</div>

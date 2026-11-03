@@ -1,5 +1,8 @@
 # BINZO — Smart Autonomous Dustbin Robot
 
+[![Powered by cl0ud](https://img.shields.io/badge/Powered%20by-cl0ud-00E5FF?style=for-the-badge&logoColor=0B0F19&labelColor=0B0F19)](https://github.com/Ojas-sta/cl0ud-brand-engineering)
+[![Co-engineered by Ojas Singh](https://img.shields.io/badge/Co--engineered%20by-Ojas%20Singh-1E3A8A?style=for-the-badge&logoColor=white&labelColor=0B0F19)](https://github.com/Ojas-sta)
+
 BINZO is a smart, autonomous robotic dustbin built with dual ESP32 microcontrollers. It follows black line tracks with infrared sensors, detects approaching people with an ESP32-CAM and ultrasonic proximity fallback, opens its motorized lid automatically, and communicates over ESP-NOW and Wi-Fi.
 
 ---
@@ -143,3 +146,33 @@ In branch `m5core2-mecanum-swerve`, BINZO also supports an **M5Stack Core2 + 4-C
 - **Laptop Bridge:** `laptop_controller/radio_bridge.py`
 - **Quick Launch:** `run_bridge.bat` (controller bridge) and `run_tester.bat` (axis calibration tester)
 - **Setup Guide:** `docs/SETUP_GUIDE.md`
+
+---
+
+## 8. Autonomous Person-Tracking & Trash Service (M5StickV AI Camera)
+
+In autonomous mode, Binzo tracks a line circuit using TCRT5000 IR sensors, while continuous human detection is accelerated at 16.5 FPS by the **M5StickV (K210 dual-core 64-bit RISC-V + KPU YOLOv2)**:
+
+1. **Patrol Track:** Binzo cruises along a closed tape loop using TCRT5000 line sensors on Port B.
+2. **Person Detection:** M5StickV detects an approaching human and streams bounded target centroids over Grove Port C (`BINZO:P,...`).
+3. **Approach & Intercept:** Binzo leaves the tape line, engages encoder odometry, and steers directly to the target person using proportional visual servoing.
+4. **Mouth Actuation:** On arrival, Binzo stops, actuates the lid servo to 95° via the 4-channel encoder motor module, and renders an animated "FEED ME" face on the M5Core2 LCD.
+5. **Trash Ingestion & Gratitude:** After a 5-second deposit window, the lid closes, and the LCD switches to a smiling "THANK YOU" face.
+6. **Return to Circuit:** Binzo reverses using encoder tick reversal, finds the tape line with TCRT5000 sensors, and resumes line patrol.
+
+---
+
+## 🤝 Engineering Attribution & Credits
+
+- **Original Project & Concept:** Binzo Team (Shashank Jangid & contributors)
+- **M5Core2 Mecanum Architecture & FSM:** Co-engineered by **Ojas Singh** | Powered by **cl0ud** ([cl0ud Brand Engineering](https://github.com/Ojas-sta/cl0ud-brand-engineering))
+- **Vision Subsystem (K210 YOLOv2 Tracking):** Co-engineered by **Ojas Singh** | Powered by **cl0ud**
+- **5-Channel Line Follower & Odometry:** Co-engineered by **Ojas Singh** | Powered by **cl0ud**
+
+<div align="center">
+  <a href="https://github.com/Ojas-sta/cl0ud-brand-engineering">
+    <img src="https://raw.githubusercontent.com/Ojas-sta/cl0ud-brand-engineering/main/assets/badges/cl0ud-credit-card.svg" alt="Powered by cl0ud | Co-engineered by Ojas Singh" width="100%" style="max-width: 820px;" />
+  </a>
+</div>
+
+

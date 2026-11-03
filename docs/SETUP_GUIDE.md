@@ -1,5 +1,8 @@
 # M5Core2 Mecanum Trash Can - Complete Setup & Calibration Guide
 
+[![Powered by cl0ud](https://img.shields.io/badge/Powered%20by-cl0ud-00E5FF?style=for-the-badge&logoColor=0B0F19&labelColor=0B0F19)](https://github.com/Ojas-sta/cl0ud-brand-engineering)
+[![Co-engineered by Ojas Singh](https://img.shields.io/badge/Co--engineered%20by-Ojas%20Singh-1E3A8A?style=for-the-badge&logoColor=white&labelColor=0B0F19)](https://github.com/Ojas-sta)
+
 ## 1. Drivetrain Architecture & Mecanum Wheel Orientation
 
 A 4x4 Mecanum drive operates by Vector Force Addition. For the omnidirectional "swerve-style" movement to function properly, the 4 Mecanum wheels **must be mounted in the correct physical orientation**.
@@ -118,3 +121,88 @@ This automatically writes your exact axis IDs to `laptop_controller/config.json`
   - You can translate with the right stick while rotating with the left stick simultaneously!
 - **Emergency Stop**:
   - Tap anywhere on the M5Core2 touchscreen to immediately freeze all motors. Tap again to resume.
+
+---
+
+## 6. Autonomous Person-Tracking & Trash Collection Workflow
+
+Binzo can operate fully autonomously to patrol a room along a taped line track, detect nearby humans, offer its bin, and return to the line loop:
+
+```
++-------------------------------------------------------------------+
+|                        [AUTO_LINE_PATROL]                         |
+|           Follows black/white tape line loop via TCRT5000         |
++---------------------------------+---------------------------------+
+                                  |
+                   Person Detected by M5StickV Camera
+                  (cx centered, confidence > 65%, bbox > 30px)
+                                  v
++-------------------------------------------------------------------+
+|                       [AUTO_APPROACH_PERSON]                      |
+|      Enters encoder odometry tracking; steers towards person      |
+|      using proportional visual servoing until target bbox reached |
++---------------------------------+---------------------------------+
+                                  |
+                       Target Distance Reached
+                                  v
++-------------------------------------------------------------------+
+|                        [AUTO_OPEN_MOUTH]                          |
+|         Commands Servo Ch 0 on 4EncoderMotor Module to 95°        |
+|             Screen displays open-mouthed FEED ME face             |
++---------------------------------+---------------------------------+
+                                  |
+                                  v
++-------------------------------------------------------------------+
+|                        [AUTO_AWAIT_TRASH]                         |
+|           Waits 5.0 seconds for user to deposit trash             |
++---------------------------------+---------------------------------+
+                                  |
+                                  v
++-------------------------------------------------------------------+
+|                        [AUTO_CLOSE_MOUTH]                         |
+|         Commands Servo Ch 0 back to 0° (lid closed)               |
+|            Screen displays smiling THANK YOU face                 |
++---------------------------------+---------------------------------+
+                                  |
+                                  v
++-------------------------------------------------------------------+
+|                        [AUTO_RETURN_LINE]                         |
+|    Drives reverse/return path using encoder tick accumulation     |
++---------------------------------+---------------------------------+
+                                  |
+                       Encoder Target Reached
+                                  v
++-------------------------------------------------------------------+
+|                      [AUTO_REACQUIRE_LINE]                        |
+|       Rotates / creeps until TCRT5000 re-locks onto tape line     |
++---------------------------------+---------------------------------+
+                                  |
+                         Line Detected (TCRT5000)
+                                  v
+                             (Back to Loop)
+
+```
+
+### Hardware Connections:
+| Subsystem | Port / Pins | Function |
+|---|---|---|
+| **M5StickV Camera** | Port C (Grove Blue: GPIO 13 RX, 14 TX) | 16.5 FPS Person Detector via YOLOv2 UART stream |
+| **Line Follower** | Port B (Grove Black: GPIO 26 OneWire)| 5-Channel Multiple Line Follower / TCRT5000 |
+| **Mouth Servo** | 4EncoderMotor Servo Ch 0 (I2C addr 0x24) | MG90S servo actuates bin lid open/close |
+| **Mecanum Drivetrain** | 4EncoderMotor Motor Ch 0-3 (I2C addr 0x24) | 4-channel closed-loop encoder DC motors |
+
+---
+
+## 🤝 Engineering Attribution & Credits
+
+- **Original Project & Concept:** Binzo Team (Shashank Jangid & contributors)
+- **M5Core2 Mecanum Architecture & FSM:** Co-engineered by **Ojas Singh** | Powered by **cl0ud** ([cl0ud Brand Engineering](https://github.com/Ojas-sta/cl0ud-brand-engineering))
+- **Vision Subsystem (K210 YOLOv2 Tracking):** Co-engineered by **Ojas Singh** | Powered by **cl0ud**
+- **5-Channel Line Follower & Odometry:** Co-engineered by **Ojas Singh** | Powered by **cl0ud**
+
+<div align="center">
+  <a href="https://github.com/Ojas-sta/cl0ud-brand-engineering">
+    <img src="https://raw.githubusercontent.com/Ojas-sta/cl0ud-brand-engineering/main/assets/badges/cl0ud-credit-card.svg" alt="Powered by cl0ud | Co-engineered by Ojas Singh" width="100%" style="max-width: 820px;" />
+  </a>
+</div>
+
