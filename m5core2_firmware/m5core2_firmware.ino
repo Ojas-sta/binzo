@@ -534,15 +534,17 @@ void loop() {
         updateDisplay();
     }
 
-    // 9. Serial Telemetry Stream (2.5 Hz)
+    // 9. Serial Telemetry Stream (3.3 Hz)
     static unsigned long lastSerialPrintTime = 0;
-    if (now - lastSerialPrintTime >= 400) {
+    if (now - lastSerialPrintTime >= 300) {
         lastSerialPrintTime = now;
-        Serial.printf("[AUTO] State: %-11s | LineRaw: %2u, Pos: %2d [S:%d%d%d%d%d] | Cam: human=%d cx=%3d h=%3d | Mot: FL=%3d FR=%3d\n",
-                      autoStateNames[autoState], lineRawValue, linePosition,
-                      lineSensorBits[0], lineSensorBits[1], lineSensorBits[2], lineSensorBits[3], lineSensorBits[4],
-                      m5HumanDetected, m5Cx, m5H,
-                      actualMotorPWM[0], actualMotorPWM[1]);
+        const char* irAct = (!onLineLeft && !onLineRight) ? "CENTER (DRIVE FORWARD)" :
+                            (onLineRight && !onLineLeft)  ? "RIGHT HIT -> TURN RIGHT" :
+                            (onLineLeft && !onLineRight)  ? "LEFT HIT -> TURN LEFT" : "CROSS/BOTH -> FORWARD";
+        Serial.printf("[AUTO] %-11s | IR: L26=%d, R36=%d -> %-24s | PWM: FL=%3d FR=%3d RL=%3d RR=%3d\n",
+                      autoStateNames[autoState], onLineLeft ? 1 : 0, onLineRight ? 1 : 0,
+                      irAct,
+                      actualMotorPWM[0], actualMotorPWM[1], actualMotorPWM[2], actualMotorPWM[3]);
     }
 
     delay(1);
@@ -558,52 +560,27 @@ void updateAutonomousMission() {
         // ---------------------------------------------------------------------
         // 1. LINE FOLLOWING LOOP
         // ---------------------------------------------------------------------
+        // 1. LINE PATROL (100% DEDICATED DUAL IR SENSORS - DITCHED CAMERAS)
+        // ---------------------------------------------------------------------
         case AUTO_LINE_PATROL: {
-            // Check if M5 AI Camera spots a person (confidence & streak filter)
-            bool canServePerson = (m5HumanDetected && m5Conf >= PERSON_MIN_CONF && 
-                                  (currentMillis - lastPersonServedTime > PERSON_COOLDOWN));
-
-            if (canServePerson) {
-                personConfidenceStreak++;
-                if (personConfidenceStreak >= PERSON_CONF_FRAMES) {
-                    // Confirmed person! Record departure odometry and leave line
-                    stopAllMotors("Human spotted! Leaving line");
-                    resetDepartureOdometry();
-                    approachStartTime = currentMillis;
-                    personConfidenceStreak = 0;
-                    M5.Speaker.tone(1400, 150); // Friendly alert chirp
-                    logDebugUDP("MISSION", "Human sighted at cx=%d, h=%d! Leaving line to approach...", m5Cx, m5H);
-                    autoState = AUTO_APPROACH_PERSON;
-                    break;
-                }
-            } else {
-                personConfidenceStreak = 0;
+            // Case 1: NEITHER SENSOR ACTIVE -> Track is centered between sensors!
+            // DRIVE STRAIGHT FORWARD AT PATROL SPEED
+            if (!onLineLeft && !onLineRight) {
+                driveMecanum(PATROL_SPEED, 0, 0);
             }
-
-            // Camera Vision Line Follower + 2x IR Edge Guards (GPIO 26 Left, GPIO 36 Right)
-            if (camMecanumActive && (currentMillis - lastCamLineTime < 350)) {
-                // Actively driven by camera's vision movement vectors (handled in parseM5Packet)
-                // Edge Guard Protection:
-                // If robot drifts into an edge boundary while camera is tracking,
-                // apply emergency edge bias to pull back onto the line
-                if (onLineLeft && !onLineRight) {
-                    driveMecanum(PATROL_SPEED - 10, 0, -25);
-                } else if (!onLineLeft && onLineRight) {
-                    driveMecanum(PATROL_SPEED - 10, 0, 25);
-                }
-            } else if (isLineDetected) {
-                // 2x IR Line Edge Follower Fallback (Port B)
-                if (onLineLeft && !onLineRight) {
-                    driveMecanum(PATROL_SPEED - 10, 0, -28);
-                } else if (!onLineLeft && onLineRight) {
-                    driveMecanum(PATROL_SPEED - 10, 0, 28);
-                } else if (onLineLeft && onLineRight) {
-                    driveMecanum(PATROL_SPEED - 15, 0, 0); // Both on line
-                }
-            } else {
-                // Both off line: gently turn back to last known side
-                int steer = (lastKnownLineSide == 1) ? -24 : 24;
-                driveMecanum(PATROL_SPEED - 14, 0, steer);
+            // Case 2: RIGHT SENSOR ACTIVE -> Robot drifted left, right sensor touched black line!
+            // TURN / PIVOT DECISIVELY RIGHT TO RE-CENTER
+            else if (!onLineLeft && onLineRight) {
+                driveMecanum(PATROL_SPEED - 12, 16, 46);
+            }
+            // Case 3: LEFT SENSOR ACTIVE -> Robot drifted right, left sensor touched black line!
+            // TURN / PIVOT DECISIVELY LEFT TO RE-CENTER
+            else if (onLineLeft && !onLineRight) {
+                driveMecanum(PATROL_SPEED - 12, -16, -46);
+            }
+            // Case 4: BOTH SENSORS ACTIVE -> Perpendicular intersection / cross line
+            else {
+                driveMecanum(PATROL_SPEED - 10, 0, 0);
             }
             break;
         }
@@ -844,10 +821,7 @@ void parseM5Packet(const String& pkt) {
             camMecanumActive = true;
             lastCamLineTime = millis();
             lastM5Heartbeat = millis();
-
-            if (isAutonomousMode && !isEmergencyStop && autoState == AUTO_LINE_PATROL) {
-                applyMotorSpeeds(camM0 * INV_FL, camM1 * INV_FR, camM2 * INV_RL, camM3 * INV_RR);
-            }
+            // In LINE_PATROL, cameras are ditched! Only IR sensors drive the motors.
         }
     }
 }
@@ -856,20 +830,23 @@ void parseM5Packet(const String& pkt) {
 // LINE SENSOR READING (2x IR SENSORS ON PORT B: GPIO 26 LEFT, GPIO 36 RIGHT)
 // ----------------------------------------------------------------------------
 void readLineSensors() {
-    int rawL = digitalRead(PIN_IR_LEFT);
-    int rawR = digitalRead(PIN_IR_RIGHT);
+    int rawDigL = digitalRead(PIN_IR_LEFT);
+    int rawDigR = digitalRead(PIN_IR_RIGHT);
+    int rawAnaR = analogRead(PIN_IR_RIGHT);
 
-    int activeLevel = IR_ACTIVE_ON_BLACK ? HIGH : LOW;
-    onLineLeft  = (rawL == activeLevel);
-    onLineRight = (rawR == activeLevel);
+    // Active detection:
+    // Left sensor (GPIO 26): digital HIGH
+    // Right sensor (GPIO 36): digital HIGH or analog ADC reading > 1800 (out of 4095)
+    onLineLeft  = (rawDigL == HIGH);
+    onLineRight = (rawDigR == HIGH) || (rawAnaR > 1800);
 
     lineRawValue = (onLineLeft ? 0x01 : 0x00) | (onLineRight ? 0x02 : 0x00);
     isLineDetected = onLineLeft || onLineRight;
 
-    // For legacy UI compatibility
+    // UI bits: bit 0 = Right, bit 4 = Left
     lineSensorBits[0] = onLineRight;
     lineSensorBits[1] = false;
-    lineSensorBits[2] = (onLineLeft && onLineRight); // Both centered/cross
+    lineSensorBits[2] = (onLineLeft && onLineRight); // Both active (cross-line)
     lineSensorBits[3] = false;
     lineSensorBits[4] = onLineLeft;
 
@@ -879,11 +856,8 @@ void readLineSensors() {
     } else if (!onLineLeft && onLineRight) {
         linePosition = -2; // Line on right edge (robot veered left)
         lastKnownLineSide = -1;
-    } else if (onLineLeft && onLineRight) {
-        linePosition = 0; // Cross line / centered between edges
     } else {
-        // Clear of both edges: if camera is active, centered (0)
-        linePosition = (lastKnownLineSide == 1) ? 3 : -3;
+        linePosition = 0; // Centered between sensors or cross-line
     }
 }
 
