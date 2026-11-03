@@ -30,7 +30,7 @@
 #include <M5Unified.h>
 #include <esp_system.h>
 #include "M5Module4EncoderMotor.h"
-#include "WeMultipleLineFollower.h"
+// #include "WeMultipleLineFollower.h"
 
 // ----------------------------------------------------------------------------
 // WIFI CONFIGURATION & NETWORK OVERRIDE
@@ -62,9 +62,10 @@ const uint8_t PIN_M5_CAM_RX = 13; // M5Core2 RX2 <- M5 Camera Grove Pin 34 (TX)
 const uint8_t PIN_M5_CAM_TX = 14; // M5Core2 TX2 -> M5 Camera Grove Pin 35 (RX)
 HardwareSerial M5CamSerial(2);
 
-// Port B (Black Grove): 5-Channel Multiple Line Follower (OneWire protocol)
-const uint8_t PIN_LINE_FOLLOWER = 26; // Grove Port B Pin 26
-WeMultipleLineFollower lineFollower(PIN_LINE_FOLLOWER);
+// Port B (Black Grove): 2x IR Line Sensors (Left Edge: GPIO 26, Right Edge: GPIO 36)
+const uint8_t PIN_IR_LEFT        = 26; // Left edge IR sensor on Port B (Pin 1 / Yellow wire)
+const uint8_t PIN_IR_RIGHT       = 36; // Right edge IR sensor on Port B (Pin 2 / White wire)
+const bool    IR_ACTIVE_ON_BLACK = true; // Digital HIGH when sensor detects black line / dark edge
 
 // Mouth / Lid Servo (MG90S)
 const uint8_t SERVO_CHANNEL      = 0;  // 4EncoderMotor servo port CH0
@@ -291,10 +292,11 @@ void setup() {
     Serial.printf("[M5_CAM] Serial2 initialized on Port C (RX=%d, TX=%d) @ 115200 baud\n",
                   PIN_M5_CAM_RX, PIN_M5_CAM_TX);
 
-    // 2. Initialize 5-Channel Multiple Line Follower on Port B (GPIO 26)
-    lineFollower.reset(PIN_LINE_FOLLOWER);
-    Serial.printf("[LINE] 5-Channel Multiple Line Follower initialized on Port B (Pin %d)\n", 
-                  PIN_LINE_FOLLOWER);
+    // 2. Initialize 2x IR Line Sensors on Port B (Left: GPIO 26, Right: GPIO 36)
+    pinMode(PIN_IR_LEFT, INPUT_PULLUP);
+    pinMode(PIN_IR_RIGHT, INPUT); // GPIO 36 on ESP32 is input-only
+    Serial.printf("[LINE] 2x Edge IR Sensors initialized on Port B: Left=GPIO%d, Right=GPIO%d\n", 
+                  PIN_IR_LEFT, PIN_IR_RIGHT);
 
     // 3. Initialize 4-Encoder Motor Driver Module (I2C 0x24)
     initMotorDriver();
@@ -578,18 +580,30 @@ void updateAutonomousMission() {
                 personConfidenceStreak = 0;
             }
 
-            // Camera Vision Line Follower vs 5-Channel Multiple Line Follower
+            // Camera Vision Line Follower + 2x IR Edge Guards (GPIO 26 Left, GPIO 36 Right)
             if (camMecanumActive && (currentMillis - lastCamLineTime < 350)) {
                 // Actively driven by camera's vision movement vectors (handled in parseM5Packet)
+                // Edge Guard Protection:
+                // If robot drifts into an edge boundary while camera is tracking,
+                // apply emergency edge bias to pull back onto the line
+                if (onLineLeft && !onLineRight) {
+                    driveMecanum(PATROL_SPEED - 10, 0, -25);
+                } else if (!onLineLeft && onLineRight) {
+                    driveMecanum(PATROL_SPEED - 10, 0, 25);
+                }
             } else if (isLineDetected) {
-                // 5-Channel Multiple Line Follower (OneWire Pin 26)
-                // linePosition: -4 (far right) to +4 (far left), 0 centered
-                int steer = constrain(-linePosition * 7, -32, 32);
-                driveMecanum(PATROL_SPEED, 0, steer);
+                // 2x IR Line Edge Follower Fallback (Port B)
+                if (onLineLeft && !onLineRight) {
+                    driveMecanum(PATROL_SPEED - 10, 0, -28);
+                } else if (!onLineLeft && onLineRight) {
+                    driveMecanum(PATROL_SPEED - 10, 0, 28);
+                } else if (onLineLeft && onLineRight) {
+                    driveMecanum(PATROL_SPEED - 15, 0, 0); // Both on line
+                }
             } else {
                 // Both off line: gently turn back to last known side
-                int steer = (lastKnownLineSide == 1) ? -28 : 28;
-                driveMecanum(PATROL_SPEED - 12, 0, steer);
+                int steer = (lastKnownLineSide == 1) ? -24 : 24;
+                driveMecanum(PATROL_SPEED - 14, 0, steer);
             }
             break;
         }
@@ -839,37 +853,38 @@ void parseM5Packet(const String& pkt) {
 }
 
 // ----------------------------------------------------------------------------
-// LINE SENSOR READING (5-CHANNEL MULTIPLE LINE FOLLOWER ON PORT B)
+// LINE SENSOR READING (2x IR SENSORS ON PORT B: GPIO 26 LEFT, GPIO 36 RIGHT)
 // ----------------------------------------------------------------------------
 void readLineSensors() {
-    lineRawValue = lineFollower.readSensor();
+    int rawL = digitalRead(PIN_IR_LEFT);
+    int rawR = digitalRead(PIN_IR_RIGHT);
 
-    // S1 (bit 0) to S5 (bit 4): 0 = over black line, 1 = white background
-    for (int i = 0; i < 5; i++) {
-        lineSensorBits[i] = ((lineRawValue & (1 << i)) == 0);
+    int activeLevel = IR_ACTIVE_ON_BLACK ? HIGH : LOW;
+    onLineLeft  = (rawL == activeLevel);
+    onLineRight = (rawR == activeLevel);
+
+    lineRawValue = (onLineLeft ? 0x01 : 0x00) | (onLineRight ? 0x02 : 0x00);
+    isLineDetected = onLineLeft || onLineRight;
+
+    // For legacy UI compatibility
+    lineSensorBits[0] = onLineRight;
+    lineSensorBits[1] = false;
+    lineSensorBits[2] = (onLineLeft && onLineRight); // Both centered/cross
+    lineSensorBits[3] = false;
+    lineSensorBits[4] = onLineLeft;
+
+    if (onLineLeft && !onLineRight) {
+        linePosition = 2; // Line on left edge (robot veered right)
+        lastKnownLineSide = 1;
+    } else if (!onLineLeft && onLineRight) {
+        linePosition = -2; // Line on right edge (robot veered left)
+        lastKnownLineSide = -1;
+    } else if (onLineLeft && onLineRight) {
+        linePosition = 0; // Cross line / centered between edges
+    } else {
+        // Clear of both edges: if camera is active, centered (0)
+        linePosition = (lastKnownLineSide == 1) ? 3 : -3;
     }
-
-    switch (lineRawValue) {
-        case 15: linePosition =  4; lastKnownLineSide = 1; break;  // 01111: S5 (far left)
-        case  7: linePosition =  3; lastKnownLineSide = 1; break;  // 00111: S4, S5
-        case 23: linePosition =  2; lastKnownLineSide = 1; break;  // 10111: S4
-        case 19: linePosition =  1; lastKnownLineSide = 1; break;  // 10011: S3, S4
-        case 27: linePosition =  0; break;                         // 11011: S3 (centered)
-        case 25: linePosition = -1; lastKnownLineSide = -1; break; // 11001: S2, S3
-        case 29: linePosition = -2; lastKnownLineSide = -1; break; // 11101: S2
-        case 28: linePosition = -3; lastKnownLineSide = -1; break; // 11100: S1, S2
-        case 30: linePosition = -4; lastKnownLineSide = -1; break; // 11110: S1 (far right)
-        case 31: // All off line
-            linePosition = (lastKnownLineSide == 1) ? 5 : -5;
-            break;
-        default:
-            if (lineSensorBits[2]) linePosition = 0;
-            break;
-    }
-
-    isLineDetected = (lineRawValue != 31 && lineRawValue != 0);
-    onLineLeft  = lineSensorBits[3] || lineSensorBits[4];
-    onLineRight = lineSensorBits[0] || lineSensorBits[1];
 }
 
 // ----------------------------------------------------------------------------
@@ -1180,13 +1195,16 @@ void updateDisplay() {
     M5.Display.setTextDatum(top_left);
     M5.Display.setTextColor(COLOR_TEXT_DIM);
 
-    M5.Display.drawString("LINE SENSOR (Port B):", 172, 76);
-    for (int i = 0; i < 5; i++) {
-        uint16_t boxColor = lineSensorBits[i] ? COLOR_GREEN_ARMED : 0x2124;
-        M5.Display.fillRoundRect(172 + (i * 16), 88, 12, 12, 2, boxColor);
-    }
-    M5.Display.setTextColor(isLineDetected ? COLOR_GREEN_ARMED : WHITE);
-    M5.Display.drawString("P:" + String(linePosition), 260, 90);
+    M5.Display.drawString("IR EDGES (Port B):", 172, 76);
+    uint16_t boxL = onLineLeft ? COLOR_GREEN_ARMED : 0x2124;
+    uint16_t boxR = onLineRight ? COLOR_GREEN_ARMED : 0x2124;
+    M5.Display.fillRoundRect(172, 88, 42, 14, 2, boxL);
+    M5.Display.fillRoundRect(220, 88, 42, 14, 2, boxR);
+    M5.Display.setTextColor(WHITE);
+    M5.Display.drawString("L:26", 176, 91);
+    M5.Display.drawString("R:36", 224, 91);
+    M5.Display.setTextColor(isLineDetected ? COLOR_GREEN_ARMED : COLOR_TEXT_DIM);
+    M5.Display.drawString(isLineDetected ? "EDGE" : "CTR", 270, 91);
 
     M5.Display.setTextColor(COLOR_TEXT_DIM);
     M5.Display.drawString("M5 AI CAMERA (Port C):", 172, 110);
