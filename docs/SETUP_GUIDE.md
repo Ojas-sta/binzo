@@ -100,9 +100,9 @@ This automatically writes your exact axis IDs to `laptop_controller/config.json`
 
 1. Power on the M5Core2 and the 4-channel motor stack (external battery connected to motor screw terminals).
 2. The M5Core2 screen will display:
-   - Connecting to `0xMakers_Dev`...
-   - WiFi Connected! `IP: 192.168.x.x`
-3. Make sure your Laptop is connected to the same WiFi: `0xMakers_Dev`.
+   - Connecting to `DPSIDNT`...
+   - WiFi Connected! `IP: 192.168.x.x` (or tap screen to OVERRIDE and run offline)
+3. Make sure your Laptop is connected to the same WiFi: `DPSIDNT`.
 4. Launch the UDP bridge on your laptop:
    Double-click `run_bridge.bat` or run:
    ```powershell

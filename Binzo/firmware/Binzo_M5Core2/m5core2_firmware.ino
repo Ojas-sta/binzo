@@ -33,10 +33,11 @@
 #include "WeMultipleLineFollower.h"
 
 // ----------------------------------------------------------------------------
-// WIFI CONFIGURATION
+// WIFI CONFIGURATION & NETWORK OVERRIDE
 // ----------------------------------------------------------------------------
-const char* WIFI_SSID     = "0xMakers_Dev";
-const char* WIFI_PASSWORD = "Welc0me@123";
+const char* WIFI_SSID     = "DPSIDNT";
+const char* WIFI_PASSWORD = "Air@25683";
+bool wifiOverridden       = false;
 
 // ----------------------------------------------------------------------------
 // NETWORK PORTS & TIMINGS
@@ -295,13 +296,17 @@ void setup() {
     // 4. Initial Mouth Lid Position: Closed
     setMouthAngle(SERVO_ANGLE_CLOSED);
 
-    // 5. Connect WiFi for UDP Remote & Telemetry
+    // 5. Connect WiFi for UDP Remote & Telemetry (with Instant Override & Timeout)
     setupWiFi();
 
-    // 6. Start UDP Listeners
-    udpControl.begin(UDP_CONTROL_PORT);
-    udpDiscovery.begin(UDP_DISCOVERY_PORT);
-    Serial.printf("[UDP] Listening for control packets on port %d\n", UDP_CONTROL_PORT);
+    // 6. Start UDP Listeners if connected
+    if (WiFi.status() == WL_CONNECTED) {
+        udpControl.begin(UDP_CONTROL_PORT);
+        udpDiscovery.begin(UDP_DISCOVERY_PORT);
+        Serial.printf("[UDP] Listening for control packets on port %d\n", UDP_CONTROL_PORT);
+    } else {
+        Serial.println("[UDP] WiFi offline / overridden. Autonomous patrol active.");
+    }
 
     drawStaticUI();
     lastPacketRxTime = millis();
@@ -353,43 +358,99 @@ void initMotorDriver() {
 }
 
 // ----------------------------------------------------------------------------
-// SETUP WIFI
+// SETUP WIFI WITH INSTANT TOUCH/BUTTON OVERRIDE & TIMEOUT
 // ----------------------------------------------------------------------------
 void setupWiFi() {
-    M5.Display.fillRect(0, 120, 320, 100, BLACK);
+    M5.Display.fillRect(0, 95, 320, 145, BLACK);
+    M5.Display.setFont(&fonts::FreeSansBold9pt7b);
+    M5.Display.setTextColor(COLOR_ACCENT);
+    M5.Display.setTextDatum(top_center);
+    M5.Display.drawString("CONNECTING TO WIFI", 160, 100);
+
+    M5.Display.setFont(&fonts::Font0);
     M5.Display.setTextColor(WHITE);
-    M5.Display.drawString(String("Connecting to: ") + WIFI_SSID, 160, 130);
+    M5.Display.drawString(String("SSID: ") + WIFI_SSID, 160, 124);
+
+    // Draw prominent Touch Override Button
+    M5.Display.fillRoundRect(16, 172, 288, 38, 8, 0x8800);
+    M5.Display.setTextColor(WHITE);
+    M5.Display.setFont(&fonts::FreeSansBold9pt7b);
+    M5.Display.setTextDatum(middle_center);
+    M5.Display.drawString("[ TAP TO SKIP / OVERRIDE ]", 160, 191);
+
+    Serial.printf("\n[WiFi] Connecting to SSID: '%s'...\n", WIFI_SSID);
+    Serial.println("[WiFi] Tap screen or press buttons to OVERRIDE and run OFFLINE.");
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
+    unsigned long wifiStart = millis();
+    const unsigned long WIFI_TIMEOUT_MS = 10000; // 10-second automatic timeout override
     int dots = 0;
+
     while (WiFi.status() != WL_CONNECTED) {
-        delay(350);
+        M5.update();
+
+        // 1. Manual User Override (Touch anywhere or Button A/B/C)
+        auto touchDetail = M5.Touch.getDetail();
+        if (touchDetail.isPressed() || M5.BtnA.isPressed() || M5.BtnB.isPressed() || M5.BtnC.isPressed()) {
+            wifiOverridden = true;
+            Serial.println("\n[WiFi] User OVERRIDE triggered! Bypassing WiFi connection.");
+            M5.Speaker.tone(1200, 100);
+
+            M5.Display.fillRect(0, 95, 320, 145, BLACK);
+            M5.Display.setTextColor(COLOR_ORANGE_FAIL);
+            M5.Display.setFont(&fonts::FreeSansBold9pt7b);
+            M5.Display.drawString("WIFI OVERRIDDEN!", 160, 125);
+            M5.Display.setFont(&fonts::Font0);
+            M5.Display.setTextColor(WHITE);
+            M5.Display.drawString("Running in OFFLINE Autonomous Mode", 160, 155);
+            delay(700);
+            return;
+        }
+
+        // 2. Automatic Timeout Override
+        if (millis() - wifiStart > WIFI_TIMEOUT_MS) {
+            wifiOverridden = true;
+            Serial.println("\n[WiFi] Timeout reached. Overriding network connection -> OFFLINE MODE.");
+            M5.Speaker.tone(800, 120);
+
+            M5.Display.fillRect(0, 95, 320, 145, BLACK);
+            M5.Display.setTextColor(COLOR_ORANGE_FAIL);
+            M5.Display.setFont(&fonts::FreeSansBold9pt7b);
+            M5.Display.drawString("WIFI TIMEOUT -> OFFLINE", 160, 125);
+            M5.Display.setFont(&fonts::Font0);
+            M5.Display.setTextColor(WHITE);
+            M5.Display.drawString("Standalone Autonomous Mode Active", 160, 155);
+            delay(700);
+            return;
+        }
+
+        delay(150);
         Serial.print(".");
         dots++;
         String dotStr = "";
-        for (int i = 0; i < (dots % 5); i++) dotStr += ".";
-        M5.Display.fillRect(0, 160, 320, 30, BLACK);
-        M5.Display.drawString(String("Connecting") + dotStr, 160, 160);
-
-        if (dots > 25) {
-            Serial.println("\n[WiFi] Retry begin...");
-            WiFi.disconnect();
-            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-            dots = 0;
-        }
+        for (int i = 0; i < (dots % 6); i++) dotStr += ".";
+        M5.Display.fillRect(0, 140, 320, 24, BLACK);
+        M5.Display.setFont(&fonts::Font0);
+        M5.Display.setTextColor(COLOR_ACCENT);
+        int remainingSec = (int)((WIFI_TIMEOUT_MS - (millis() - wifiStart)) / 1000);
+        M5.Display.drawString(String("Connecting") + dotStr + " (" + String(remainingSec) + "s)", 160, 145);
     }
 
     WiFi.setSleep(false);
+    wifiOverridden = false;
     Serial.printf("\n[WiFi] Connected! IP: %s | RSSI: %d dBm\n", 
                   WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
-    M5.Display.fillRect(0, 120, 320, 100, BLACK);
+    M5.Display.fillRect(0, 95, 320, 145, BLACK);
+    M5.Display.setFont(&fonts::FreeSansBold9pt7b);
     M5.Display.setTextColor(COLOR_GREEN_ARMED);
-    M5.Display.drawString("WiFi Connected!", 160, 130);
+    M5.Display.drawString("WiFi Connected!", 160, 125);
+    M5.Display.setFont(&fonts::Font0);
     M5.Display.setTextColor(WHITE);
-    M5.Display.drawString(String("IP: ") + WiFi.localIP().toString(), 160, 160);
+    M5.Display.drawString(String("IP: ") + WiFi.localIP().toString() + " (" + String(WiFi.RSSI()) + " dBm)", 160, 155);
+    M5.Speaker.tone(1800, 120);
     delay(600);
 }
 
@@ -399,6 +460,19 @@ void setupWiFi() {
 void loop() {
     M5.update();
     unsigned long now = millis();
+
+    // 0. Dynamic UDP socket state management (handles connect / reconnect / override)
+    static bool udpStarted = false;
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!udpStarted) {
+            udpControl.begin(UDP_CONTROL_PORT);
+            udpDiscovery.begin(UDP_DISCOVERY_PORT);
+            udpStarted = true;
+            Serial.printf("[UDP] WiFi connected. Listening on port %d\n", UDP_CONTROL_PORT);
+        }
+    } else {
+        udpStarted = false;
+    }
 
     // 1. Process touch input (E-stop & Mode Toggle)
     handleTouch();
@@ -860,7 +934,22 @@ void handleTouch() {
                     M5.Speaker.tone(2000, 100);
                 }
             } 
-            // Top card area (Y < 190): Toggle Autonomous Mode vs Manual RC
+            // Top header bar (Y <= 26 && X >= 170): Network Override / Reconnect Toggle
+            else if (detail.y <= 26 && detail.x >= 170) {
+                if (WiFi.status() == WL_CONNECTED) {
+                    wifiOverridden = true;
+                    WiFi.disconnect();
+                    Serial.println("[WiFi] User tapped NET status: Network OVERRIDDEN to offline mode.");
+                    M5.Speaker.tone(900, 100);
+                } else {
+                    wifiOverridden = false;
+                    WiFi.disconnect();
+                    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+                    Serial.printf("[WiFi] User tapped NET status: Reconnecting to '%s'...\n", WIFI_SSID);
+                    M5.Speaker.tone(1500, 100);
+                }
+            }
+            // Center card area (26 < Y < 190): Toggle Autonomous Mode vs Manual RC
             else if (detail.y < 190) {
                 isAutonomousMode = !isAutonomousMode;
                 if (isAutonomousMode) {
@@ -983,7 +1072,8 @@ void updateDisplay() {
     M5.Display.setTextDatum(top_left);
     M5.Display.drawString(isAutonomousMode ? "[AUTO PATROL ACTIVE]" : "[MANUAL RC MODE]", 8, 6);
 
-    String rightStr = "BAT:" + String(M5.Power.getBatteryLevel()) + "%  CAM:" + (isM5CamOnline ? "OK" : "NO");
+    String netStr = (WiFi.status() == WL_CONNECTED) ? "NET:OK" : (wifiOverridden ? "NET:OVR" : "NET:OFF");
+    String rightStr = "BAT:" + String(M5.Power.getBatteryLevel()) + "% " + netStr + " CAM:" + (isM5CamOnline ? "OK" : "NO");
     M5.Display.setTextDatum(top_right);
     M5.Display.drawString(rightStr, 312, 6);
 

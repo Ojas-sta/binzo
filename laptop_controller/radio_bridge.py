@@ -299,12 +299,12 @@ def main():
     except Exception:
         pass
 
-    log_event(f"BRIDGE_START: Network 0xMakers_Dev | Target: {target_ip}:{udp_port}")
+    log_event(f"BRIDGE_START: Network DPSIDNT | Target: {target_ip}:{udp_port}")
 
     print("=" * 65)
     print("   M5CORE2 4X4 MECANUM TRASH CAN - RADIO BRIDGE")
     print("=" * 65)
-    print("WiFi Network: 0xMakers_Dev")
+    print("WiFi Network: DPSIDNT")
 
     # Resolve IP
     if args.broadcast:
