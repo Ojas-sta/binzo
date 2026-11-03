@@ -83,6 +83,11 @@ const int8_t INV_FL = 1;
 const int8_t INV_FR = 1;
 const int8_t INV_RL = 1;
 const int8_t INV_RR = 1;
+bool invertRightMotors = false; // Interactive on-screen toggle
+
+// Global Speed Limit & Polarity Settings (Controlled via UI)
+int  speedLimitPct   = 50;   // Default 50% speed limit (scaled to ALL motions including turning)
+bool irActiveOnBlack = true; // Digital active state (HIGH or LOW), toggleable on screen
 
 // ----------------------------------------------------------------------------
 // AUTONOMOUS MISSION TUNING & THRESHOLDS
@@ -541,8 +546,8 @@ void loop() {
         const char* irAct = (!onLineLeft && !onLineRight) ? "CENTER (DRIVE FORWARD)" :
                             (onLineRight && !onLineLeft)  ? "RIGHT HIT -> TURN RIGHT" :
                             (onLineLeft && !onLineRight)  ? "LEFT HIT -> TURN LEFT" : "CROSS/BOTH -> FORWARD";
-        Serial.printf("[AUTO] %-11s | IR: L26=%d, R36=%d -> %-24s | PWM: FL=%3d FR=%3d RL=%3d RR=%3d\n",
-                      autoStateNames[autoState], onLineLeft ? 1 : 0, onLineRight ? 1 : 0,
+        Serial.printf("[AUTO] %-11s | SpdLim: %2d%% | IR: L26=%d, R36=%d -> %-24s | PWM: FL=%3d FR=%3d RL=%3d RR=%3d\n",
+                      autoStateNames[autoState], speedLimitPct, onLineLeft ? 1 : 0, onLineRight ? 1 : 0,
                       irAct,
                       actualMotorPWM[0], actualMotorPWM[1], actualMotorPWM[2], actualMotorPWM[3]);
     }
@@ -569,18 +574,18 @@ void updateAutonomousMission() {
                 driveMecanum(PATROL_SPEED, 0, 0);
             }
             // Case 2: RIGHT SENSOR ACTIVE -> Robot drifted left, right sensor touched black line!
-            // TURN / PIVOT DECISIVELY RIGHT TO RE-CENTER
+            // TURN SMOOTHLY RIGHT TO RE-CENTER
             else if (!onLineLeft && onLineRight) {
-                driveMecanum(PATROL_SPEED - 12, 16, 46);
+                driveMecanum(PATROL_SPEED / 2, 0, 36);
             }
             // Case 3: LEFT SENSOR ACTIVE -> Robot drifted right, left sensor touched black line!
-            // TURN / PIVOT DECISIVELY LEFT TO RE-CENTER
+            // TURN SMOOTHLY LEFT TO RE-CENTER
             else if (onLineLeft && !onLineRight) {
-                driveMecanum(PATROL_SPEED - 12, -16, -46);
+                driveMecanum(PATROL_SPEED / 2, 0, -36);
             }
             // Case 4: BOTH SENSORS ACTIVE -> Perpendicular intersection / cross line
             else {
-                driveMecanum(PATROL_SPEED - 10, 0, 0);
+                driveMecanum(PATROL_SPEED / 2, 0, 0);
             }
             break;
         }
@@ -832,13 +837,10 @@ void parseM5Packet(const String& pkt) {
 void readLineSensors() {
     int rawDigL = digitalRead(PIN_IR_LEFT);
     int rawDigR = digitalRead(PIN_IR_RIGHT);
-    int rawAnaR = analogRead(PIN_IR_RIGHT);
 
-    // Active detection:
-    // Left sensor (GPIO 26): digital HIGH
-    // Right sensor (GPIO 36): digital HIGH or analog ADC reading > 1800 (out of 4095)
-    onLineLeft  = (rawDigL == HIGH);
-    onLineRight = (rawDigR == HIGH) || (rawAnaR > 1800);
+    int activeLevel = irActiveOnBlack ? HIGH : LOW;
+    onLineLeft  = (rawDigL == activeLevel);
+    onLineRight = (rawDigR == activeLevel);
 
     lineRawValue = (onLineLeft ? 0x01 : 0x00) | (onLineRight ? 0x02 : 0x00);
     isLineDetected = onLineLeft || onLineRight;
@@ -875,9 +877,11 @@ void setMouthAngle(int angle) {
 // MECANUM KINEMATICS & MOTOR DRIVE
 // ----------------------------------------------------------------------------
 void driveMecanum(int vx, int vy, int w) {
-    // vx: Forward/Backward (-127 to 127)
-    // vy: Strafe Right/Left (-127 to 127)
-    // w:  Yaw Rotation (-127 to 127)
+    // 1. Apply user-configurable global speed limit to ALL motions including turning
+    vx = (vx * speedLimitPct) / 100;
+    vy = (vy * speedLimitPct) / 100;
+    w  = (w  * speedLimitPct) / 100;
+
     int m0 = vx + vy + w;
     int m1 = vx - vy - w;
     int m2 = vx - vy + w;
@@ -891,7 +895,8 @@ void driveMecanum(int vx, int vy, int w) {
         m3 = (m3 * 127) / maxVal;
     }
 
-    applyMotorSpeeds(m0 * INV_FL, m1 * INV_FR, m2 * INV_RL, m3 * INV_RR);
+    int8_t rMul = invertRightMotors ? -1 : 1;
+    applyMotorSpeeds(m0 * INV_FL, m1 * INV_FR * rMul, m2 * INV_RL, m3 * INV_RR * rMul);
 }
 
 void applyMotorSpeeds(int8_t m0, int8_t m1, int8_t m2, int8_t m3) {
@@ -944,43 +949,95 @@ void handleTouch() {
 
     if (M5.Touch.getCount() > 0) {
         auto detail = M5.Touch.getDetail(0);
-        if (now - lastTouchTime > 400 && detail.wasPressed()) {
-            lastTouchTime = now;
-
-            // Bottom banner (Y >= 195): Emergency Stop toggle
+        if (detail.isPressed()) {
+            // 1. Bottom banner (Y >= 195): Emergency Stop toggle
             if (detail.y >= 195) {
-                isEmergencyStop = !isEmergencyStop;
-                if (isEmergencyStop) {
-                    stopAllMotors("E-Stop Pressed");
-                    M5.Speaker.tone(1000, 200);
-                } else {
-                    M5.Speaker.tone(2000, 100);
-                }
-            } 
-            // Top header bar (Y <= 26 && X >= 170): Network Override / Reconnect Toggle
-            else if (detail.y <= 26 && detail.x >= 170) {
-                if (WiFi.status() == WL_CONNECTED) {
-                    wifiOverridden = true;
-                    WiFi.disconnect();
-                    Serial.println("[WiFi] User tapped NET status: Network OVERRIDDEN to offline mode.");
-                    M5.Speaker.tone(900, 100);
-                } else {
-                    wifiOverridden = false;
-                    WiFi.disconnect();
-                    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-                    Serial.printf("[WiFi] User tapped NET status: Reconnecting to '%s'...\n", WIFI_SSID);
-                    M5.Speaker.tone(1500, 100);
+                if (now - lastTouchTime > 350) {
+                    lastTouchTime = now;
+                    isEmergencyStop = !isEmergencyStop;
+                    if (isEmergencyStop) {
+                        stopAllMotors("E-Stop Pressed");
+                        M5.Speaker.tone(1000, 200);
+                    } else {
+                        M5.Speaker.tone(2000, 100);
+                    }
                 }
             }
-            // Center card area (26 < Y < 190): Toggle Autonomous Mode vs Manual RC
-            else if (detail.y < 190) {
-                isAutonomousMode = !isAutonomousMode;
-                if (isAutonomousMode) {
-                    autoState = AUTO_LINE_PATROL;
-                    M5.Speaker.tone(1500, 100);
-                } else {
-                    stopAllMotors("Manual Mode Selected");
-                    M5.Speaker.tone(800, 100);
+            // 2. SPEED LIMIT SLIDER & BUTTONS (X >= 164, Y: 66..188)
+            else if (detail.x >= 164 && detail.y >= 66 && detail.y <= 188) {
+                // [-] Button (X: 166..212, Y: 104..142)
+                if (detail.x <= 212 && detail.y <= 142) {
+                    if (now - lastTouchTime > 150) {
+                        lastTouchTime = now;
+                        speedLimitPct = constrain(speedLimitPct - 10, 10, 100);
+                        M5.Speaker.tone(1400, 35);
+                    }
+                }
+                // [+] Button (X: 266..312, Y: 104..142)
+                else if (detail.x >= 266 && detail.y <= 142) {
+                    if (now - lastTouchTime > 150) {
+                        lastTouchTime = now;
+                        speedLimitPct = constrain(speedLimitPct + 10, 10, 100);
+                        M5.Speaker.tone(1800, 35);
+                    }
+                }
+                // Slider Track Drag / Tap (Y: 142..180, X: 166..310)
+                else if (detail.y >= 142 && detail.y <= 180) {
+                    if (now - lastTouchTime > 50) {
+                        lastTouchTime = now;
+                        int pct = 10 + ((detail.x - 170) * 90) / 136;
+                        pct = constrain(pct, 10, 100);
+                        speedLimitPct = (pct / 5) * 5;
+                    }
+                }
+            }
+            // 3. POLARITY & MOTOR INVERT BUTTONS (X < 160, Y: 125..188)
+            else if (detail.x < 160 && detail.y >= 125 && detail.y <= 154) {
+                if (now - lastTouchTime > 300) {
+                    lastTouchTime = now;
+                    irActiveOnBlack = !irActiveOnBlack;
+                    M5.Speaker.tone(1600, 60);
+                    Serial.printf("[LINE] IR Polarity switched: %s\n", irActiveOnBlack ? "ACTIVE-HIGH" : "ACTIVE-LOW");
+                }
+            }
+            else if (detail.x < 160 && detail.y > 154 && detail.y <= 188) {
+                if (now - lastTouchTime > 300) {
+                    lastTouchTime = now;
+                    invertRightMotors = !invertRightMotors;
+                    M5.Speaker.tone(1900, 60);
+                    Serial.printf("[MTR] Right Motors Inversion: %s\n", invertRightMotors ? "INVERTED (-1)" : "NORMAL (+1)");
+                }
+            }
+            // 4. Top header bar (Y <= 26 && X >= 170): Network Override / Reconnect Toggle
+            else if (detail.y <= 26 && detail.x >= 170) {
+                if (now - lastTouchTime > 400) {
+                    lastTouchTime = now;
+                    if (WiFi.status() == WL_CONNECTED) {
+                        wifiOverridden = true;
+                        WiFi.disconnect();
+                        Serial.println("[WiFi] User tapped NET status: Network OVERRIDDEN to offline mode.");
+                        M5.Speaker.tone(900, 100);
+                    } else {
+                        wifiOverridden = false;
+                        WiFi.disconnect();
+                        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+                        Serial.printf("[WiFi] User tapped NET status: Reconnecting to '%s'...\n", WIFI_SSID);
+                        M5.Speaker.tone(1500, 100);
+                    }
+                }
+            }
+            // 5. State Banner (28 < Y < 64): Toggle Auto Mode vs Manual
+            else if (detail.y > 28 && detail.y < 64) {
+                if (now - lastTouchTime > 400) {
+                    lastTouchTime = now;
+                    isAutonomousMode = !isAutonomousMode;
+                    if (isAutonomousMode) {
+                        autoState = AUTO_LINE_PATROL;
+                        M5.Speaker.tone(1500, 100);
+                    } else {
+                        stopAllMotors("Manual Mode Selected");
+                        M5.Speaker.tone(800, 100);
+                    }
                 }
             }
         }
@@ -1118,80 +1175,94 @@ void updateDisplay() {
     }
     M5.Display.drawString(bannerText, 160, 47);
 
-    // 3. INTERACTIVE ROBOT FACE (Left Card: 8, 70, 148, 122)
-    int faceCx = 82;
-    int faceCy = 131;
-    M5.Display.fillRect(10, 72, 144, 118, COLOR_PANEL);
-
-    if (autoState == AUTO_OPEN_MOUTH || autoState == AUTO_AWAIT_TRASH) {
-        // OPEN MOUTH ANIMATION: Happy eyes + big wide open mouth
-        M5.Display.fillCircle(faceCx - 24, faceCy - 18, 9, COLOR_ACCENT);
-        M5.Display.fillCircle(faceCx + 24, faceCy - 18, 9, COLOR_ACCENT);
-        M5.Display.fillRoundRect(faceCx - 30, faceCy + 4, 60, 28, 10, COLOR_ORANGE_FAIL);
-        M5.Display.setFont(&fonts::Font0);
-        M5.Display.setTextColor(WHITE);
-        M5.Display.setTextDatum(middle_center);
-        M5.Display.drawString("FEED ME", faceCx, faceCy + 18);
-    } else if (autoState == AUTO_CLOSE_MOUTH) {
-        // SMILE / THANK YOU ANIMATION
-        M5.Display.fillCircle(faceCx - 24, faceCy - 15, 9, COLOR_GREEN_ARMED);
-        M5.Display.fillCircle(faceCx + 24, faceCy - 15, 9, COLOR_GREEN_ARMED);
-        M5.Display.drawArc(faceCx, faceCy + 10, 24, 20, 20, 160, COLOR_GREEN_ARMED);
-        M5.Display.setFont(&fonts::Font0);
-        M5.Display.setTextColor(COLOR_GREEN_ARMED);
-        M5.Display.setTextDatum(middle_center);
-        M5.Display.drawString("THANK YOU!", faceCx, faceCy + 28);
-    } else if (autoState == AUTO_APPROACH_PERSON) {
-        // EXCITED EYES TRACKING PERSON HORIZONTALLY
-        int pupilOffset = constrain((m5Cx - 160) / 16, -10, 10);
-        M5.Display.fillCircle(faceCx - 24, faceCy - 8, 12, WHITE);
-        M5.Display.fillCircle(faceCx + 24, faceCy - 8, 12, WHITE);
-        M5.Display.fillCircle(faceCx - 24 + pupilOffset, faceCy - 8, 5, COLOR_ACCENT);
-        M5.Display.fillCircle(faceCx + 24 + pupilOffset, faceCy - 8, 5, COLOR_ACCENT);
-        M5.Display.setFont(&fonts::Font0);
-        M5.Display.setTextColor(COLOR_ACCENT);
-        M5.Display.setTextDatum(middle_center);
-        M5.Display.drawString("APPROACHING", faceCx, faceCy + 22);
-    } else {
-        // NORMAL PATROL BLINKING EYES
-        M5.Display.fillRoundRect(faceCx - 32, faceCy - 14, 20, 16, 4, COLOR_ACCENT);
-        M5.Display.fillRoundRect(faceCx + 12, faceCy - 14, 20, 16, 4, COLOR_ACCENT);
-        M5.Display.drawFastHLine(faceCx - 20, faceCy + 18, 40, COLOR_TEXT_DIM);
-        M5.Display.setFont(&fonts::Font0);
-        M5.Display.setTextColor(COLOR_TEXT_DIM);
-        M5.Display.setTextDatum(middle_center);
-        M5.Display.drawString("PATROLLING LINE", faceCx, faceCy + 28);
-    }
-
-    // 4. RIGHT CARD (Sensors & Encoders Telemetry: 164, 70, 148, 122)
-    M5.Display.fillRect(166, 72, 144, 118, COLOR_PANEL);
+    // 3. LEFT CARD (IR Sensors & Polarity: X=8..156, Y=66..190)
+    M5.Display.fillRect(8, 66, 148, 124, COLOR_PANEL);
+    M5.Display.drawRoundRect(8, 66, 148, 124, 6, 0x3186);
     M5.Display.setFont(&fonts::Font0);
     M5.Display.setTextDatum(top_left);
     M5.Display.setTextColor(COLOR_TEXT_DIM);
+    M5.Display.drawString("IR SENSORS (Port B)", 14, 72);
 
-    M5.Display.drawString("IR EDGES (Port B):", 172, 76);
-    uint16_t boxL = onLineLeft ? COLOR_GREEN_ARMED : 0x2124;
-    uint16_t boxR = onLineRight ? COLOR_GREEN_ARMED : 0x2124;
-    M5.Display.fillRoundRect(172, 88, 42, 14, 2, boxL);
-    M5.Display.fillRoundRect(220, 88, 42, 14, 2, boxR);
+    // Left indicator
+    uint16_t colL = onLineLeft ? COLOR_GREEN_ARMED : 0x2124;
+    M5.Display.fillRoundRect(14, 88, 62, 20, 3, colL);
     M5.Display.setTextColor(WHITE);
-    M5.Display.drawString("L:26", 176, 91);
-    M5.Display.drawString("R:36", 224, 91);
-    M5.Display.setTextColor(isLineDetected ? COLOR_GREEN_ARMED : COLOR_TEXT_DIM);
-    M5.Display.drawString(isLineDetected ? "EDGE" : "CTR", 270, 91);
+    M5.Display.drawString(String("L26: ") + String(digitalRead(PIN_IR_LEFT)), 18, 93);
 
-    M5.Display.setTextColor(COLOR_TEXT_DIM);
-    M5.Display.drawString("M5 AI CAMERA (Port C):", 172, 110);
-    M5.Display.setTextColor(m5HumanDetected ? COLOR_GREEN_ARMED : WHITE);
-    M5.Display.drawString(String("Target: ") + (m5HumanDetected ? "HUMAN" : "NONE"), 174, 124);
-    M5.Display.drawString(String("cx:") + String(m5Cx) + " h:" + String(m5H), 174, 138);
+    // Right indicator
+    uint16_t colR = onLineRight ? COLOR_GREEN_ARMED : 0x2124;
+    M5.Display.fillRoundRect(80, 88, 62, 20, 3, colR);
+    M5.Display.drawString(String("R36: ") + String(digitalRead(PIN_IR_RIGHT)), 84, 93);
 
-    M5.Display.setTextColor(COLOR_TEXT_DIM);
-    M5.Display.drawString("MC4 ENCODERS:", 172, 156);
-    int32_t enc0 = motorModuleFound ? motorDriver.getEncoderValue(0) : 0;
-    int32_t enc1 = motorModuleFound ? motorDriver.getEncoderValue(1) : 0;
+    // Action status text
+    const char* actText = (!onLineLeft && !onLineRight) ? "CENTER (FORWARD)" :
+                          (onLineRight && !onLineLeft)  ? "STEER RIGHT >>" :
+                          (onLineLeft && !onLineRight)  ? "<< STEER LEFT" : "CROSS/BOTH";
+    M5.Display.setTextColor(COLOR_ACCENT);
+    M5.Display.drawString(actText, 14, 114);
+
+    // Polarity Toggle Button (Tap to invert HIGH / LOW active)
+    M5.Display.fillRoundRect(14, 130, 136, 24, 4, 0x1A2A);
+    M5.Display.drawRoundRect(14, 130, 136, 24, 4, 0x4228);
+    M5.Display.setTextDatum(middle_center);
     M5.Display.setTextColor(WHITE);
-    M5.Display.drawString(String("FL:") + String(enc0) + " FR:" + String(enc1), 174, 170);
+    M5.Display.drawString(String("POLARITY: ") + (irActiveOnBlack ? "ACT-HIGH" : "ACT-LOW"), 82, 142);
+
+    // Motor Inversion Toggle Button
+    M5.Display.fillRoundRect(14, 158, 136, 24, 4, 0x1A2A);
+    M5.Display.drawRoundRect(14, 158, 136, 24, 4, 0x4228);
+    M5.Display.setTextColor(invertRightMotors ? COLOR_ORANGE_FAIL : COLOR_GREEN_ARMED);
+    M5.Display.drawString(String("R-MOTORS: ") + (invertRightMotors ? "INVERTED" : "NORMAL"), 82, 170);
+
+    // 4. RIGHT CARD: SPEED LIMIT SLIDER (X=164..312, Y=66..190)
+    M5.Display.fillRect(164, 66, 148, 124, COLOR_PANEL);
+    M5.Display.drawRoundRect(164, 66, 148, 124, 6, 0x3186);
+    M5.Display.setTextDatum(top_left);
+    M5.Display.setTextColor(COLOR_TEXT_DIM);
+    M5.Display.drawString("SPEED LIMIT", 170, 72);
+
+    // Big Speed Percentage
+    M5.Display.setFont(&fonts::FreeSansBold12pt7b);
+    M5.Display.setTextDatum(middle_center);
+    uint16_t spdCol = (speedLimitPct <= 50) ? COLOR_GREEN_ARMED : ((speedLimitPct <= 75) ? COLOR_ACCENT : COLOR_ORANGE_FAIL);
+    M5.Display.setTextColor(spdCol);
+    M5.Display.drawString(String(speedLimitPct) + "%", 238, 92);
+
+    // [-] and [+] Buttons
+    M5.Display.setFont(&fonts::FreeSansBold9pt7b);
+    M5.Display.fillRoundRect(170, 110, 34, 28, 4, 0x2A34);
+    M5.Display.drawRoundRect(170, 110, 34, 28, 4, COLOR_ACCENT);
+    M5.Display.setTextColor(WHITE);
+    M5.Display.drawString("-", 187, 124);
+
+    M5.Display.fillRoundRect(272, 110, 34, 28, 4, 0x2A34);
+    M5.Display.drawRoundRect(272, 110, 34, 28, 4, COLOR_ACCENT);
+    M5.Display.drawString("+", 289, 124);
+
+    // Step label
+    M5.Display.setFont(&fonts::Font0);
+    M5.Display.setTextColor(COLOR_TEXT_DIM);
+    M5.Display.drawString("+/- 10%", 238, 124);
+
+    // Interactive Slider Bar Track
+    int trackX = 170;
+    int trackY = 146;
+    int trackW = 136;
+    int trackH = 16;
+    M5.Display.fillRoundRect(trackX, trackY, trackW, trackH, 4, BLACK);
+    M5.Display.drawRoundRect(trackX, trackY, trackW, trackH, 4, 0x4228);
+
+    // Filled portion based on speedLimitPct (10% to 100%)
+    int fillW = ((speedLimitPct - 10) * (trackW - 4)) / 90;
+    fillW = constrain(fillW, 2, trackW - 4);
+    M5.Display.fillRoundRect(trackX + 2, trackY + 2, fillW, trackH - 4, 2, spdCol);
+
+    // Thumb Indicator
+    int thumbX = trackX + 2 + fillW;
+    M5.Display.fillCircle(thumbX, trackY + trackH / 2, 7, WHITE);
+    M5.Display.drawCircle(thumbX, trackY + trackH / 2, 7, COLOR_ACCENT);
+
+    M5.Display.drawString("Drag or tap bar", 238, 174);
 
     // 5. BOTTOM BAR / TOUCH ACTION BUTTON
     uint16_t btnColor = isEmergencyStop ? COLOR_GREEN_ARMED : 0x8800;
