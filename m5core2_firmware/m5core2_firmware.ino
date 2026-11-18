@@ -29,6 +29,8 @@
 #include <WiFiUdp.h>
 #include <M5Unified.h>
 #include <esp_system.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
 #include "M5Module4EncoderMotor.h"
 // #include "WeMultipleLineFollower.h"
 
@@ -67,23 +69,86 @@ const uint8_t PIN_IR_LEFT        = 26; // Left edge IR sensor on Port B (Pin 1 /
 const uint8_t PIN_IR_RIGHT       = 36; // Right edge IR sensor on Port B (Pin 2 / White wire)
 const bool    IR_ACTIVE_ON_BLACK = true; // Digital HIGH when sensor detects black line / dark edge
 
+// ESP32 Super Mini (I2C Slave 0x30): Lid Servo (Pin 10) & Ultrasonic Trash Level (Trig 3, Echo 4)
+const uint8_t ESP32_MINI_I2C_ADDR = 0x30;
+uint8_t trashDistanceCm           = 35; // Default empty
+uint8_t trashFillPercent          = 0;  // 0 to 100%
+bool    esp32MiniFound            = false;
+
+// ----------------------------------------------------------------------------
+// ESP-NOW WIRELESS CONTROL BUS (Super Mini -> M5Core2)
+// ----------------------------------------------------------------------------
+typedef struct __attribute__((packed)) {
+    uint8_t  magic;          // 0xB2 (Binzo signature)
+    uint8_t  robot_cmd;      // 0 = MOVE (Line Follow), 1 = STOP (Halt)
+    uint8_t  lid_state;      // 0 = CLOSED (0 deg), 1 = OPEN (95 deg)
+    uint8_t  attention;      // 0 = NO, 1 = YES
+    uint8_t  dwell_sec;      // Current dwell in seconds (0 to 10)
+    uint8_t  trash_fill_pct; // 0 to 100% from HC-SR04
+    uint16_t seq;            // Monotonic sequence counter
+} BinzoEspNowPacket;
+
+volatile bool espNowAttentionActive = false;
+volatile bool espNowLidOpen         = false;
+volatile uint8_t espNowDwellSec     = 0;
+volatile unsigned long lastEspNowRxTime = 0;
+volatile uint32_t espNowPacketCount = 0;
+
+void onEspNowRecv(const uint8_t *mac_addr, const uint8_t *data, int data_len) {
+    if (data_len == sizeof(BinzoEspNowPacket)) {
+        BinzoEspNowPacket pkt;
+        memcpy(&pkt, data, sizeof(pkt));
+        if (pkt.magic == 0xB2) {
+            lastEspNowRxTime = millis();
+            espNowPacketCount++;
+            espNowAttentionActive = (pkt.robot_cmd == 1);
+            espNowLidOpen = (pkt.lid_state == 1);
+            espNowDwellSec = pkt.dwell_sec;
+            trashFillPercent = pkt.trash_fill_pct;
+        }
+    }
+}
+
+void initEspNow() {
+    if (WiFi.getMode() == WIFI_OFF) {
+        WiFi.mode(WIFI_STA);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        esp_wifi_set_promiscuous(true);
+        esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+        esp_wifi_set_promiscuous(false);
+    }
+    if (esp_now_init() == ESP_OK) {
+        esp_now_register_recv_cb(onEspNowRecv);
+        Serial.println("[ESP-NOW] Receiver initialized on Channel 1!");
+    } else {
+        Serial.println("[ESP-NOW] Init Failed!");
+    }
+}
+
 // Mouth / Lid Servo (MG90S)
-const uint8_t SERVO_CHANNEL      = 0;  // 4EncoderMotor servo port CH0
+const uint8_t SERVO_CHANNEL      = 0;  // 4EncoderMotor servo port CH0 (fallback)
 const uint8_t SERVO_ANGLE_CLOSED = 0;  // Closed mouth (0 deg)
 const uint8_t SERVO_ANGLE_OPEN   = 95; // Open mouth (95 deg)
+bool          isLidManuallyOpen  = false; // Manual touch control state
 
 // Motor channel assignments (0 to 3) on M5Module4EncoderMotor
-const uint8_t CH_FRONT_LEFT  = 0;
-const uint8_t CH_FRONT_RIGHT = 1;
-const uint8_t CH_REAR_LEFT   = 2;
-const uint8_t CH_REAR_RIGHT  = 3;
+// Hardware mapping from chassis wiring:
+// Port M1 (0) = Back Left (BL)
+// Port M2 (1) = Front Left (FL)
+// Port M3 (2) = Back Right (BR)
+// Port M4 (3) = Front Right (FR)
+const uint8_t CH_REAR_LEFT   = 0;
+const uint8_t CH_FRONT_LEFT  = 1;
+const uint8_t CH_REAR_RIGHT  = 2;
+const uint8_t CH_FRONT_RIGHT = 3;
 
 // Direction multipliers (set to -1 if any wheel turns reverse)
 const int8_t INV_FL = 1;
 const int8_t INV_FR = 1;
 const int8_t INV_RL = 1;
 const int8_t INV_RR = 1;
-bool invertRightMotors = false; // Interactive on-screen toggle
+bool invertRightMotors = true; // Invert right side so all 4 wheels propel forward together
 
 // Global Speed Limit & Polarity Settings (Controlled via UI)
 int  speedLimitPct   = 50;   // Default 50% speed limit (scaled to ALL motions including turning)
@@ -321,6 +386,9 @@ void setup() {
         Serial.println("[UDP] WiFi offline / overridden. Autonomous patrol active.");
     }
 
+    // 7. Initialize ESP-NOW Receiver on Channel 1 (Super Mini <-> M5Core2)
+    initEspNow();
+
     drawStaticUI();
     lastPacketRxTime = millis();
 }
@@ -490,11 +558,22 @@ void loop() {
     // 1. Process touch input (E-stop & Mode Toggle)
     handleTouch();
 
+    // 1b. Physical Button A capacitive toggle for Lid Servo
+    if (M5.BtnA.wasPressed()) {
+        isLidManuallyOpen = !isLidManuallyOpen;
+        setMouthAngle(isLidManuallyOpen ? SERVO_ANGLE_OPEN : SERVO_ANGLE_CLOSED);
+        M5.Speaker.tone(isLidManuallyOpen ? 2200 : 1400, 80);
+        Serial.printf("[BTNA] Manual Lid: %s\n", isLidManuallyOpen ? "OPEN (95 deg)" : "CLOSED (0 deg)");
+    }
+
     // 2. Poll M5StickV AI Camera telemetry from Port C UART2
     updateM5Camera();
 
     // 3. Poll TCRT5000 IR line sensors from Port B
     readLineSensors();
+
+    // 3b. Poll ESP32 Super Mini for ultrasonic trash level over I2C (0x30)
+    pollTrashLevel();
 
     // 4. Process incoming UDP packets (Manual RadioMaster RC control)
     processIncomingUDP();
@@ -546,10 +625,12 @@ void loop() {
         const char* irAct = (!onLineLeft && !onLineRight) ? "CENTER (DRIVE FORWARD)" :
                             (onLineRight && !onLineLeft)  ? "RIGHT HIT -> TURN RIGHT" :
                             (onLineLeft && !onLineRight)  ? "LEFT HIT -> TURN LEFT" : "CROSS/BOTH -> FORWARD";
-        Serial.printf("[AUTO] %-11s | SpdLim: %2d%% | IR: L26=%d, R36=%d -> %-24s | PWM: FL=%3d FR=%3d RL=%3d RR=%3d\n",
-                      autoStateNames[autoState], speedLimitPct, onLineLeft ? 1 : 0, onLineRight ? 1 : 0,
+        Serial.printf("[AUTO] %-11s | SpdLim: %2d%% | BIN: %2d%% (%2dcm) | IR: L26=%d, R36=%d -> %-20s | PWM: FL=%3d FR=%3d RL=%3d RR=%3d\n",
+                      autoStateNames[autoState], speedLimitPct, trashFillPercent, trashDistanceCm,
+                      onLineLeft ? 1 : 0, onLineRight ? 1 : 0,
                       irAct,
-                      actualMotorPWM[0], actualMotorPWM[1], actualMotorPWM[2], actualMotorPWM[3]);
+                      actualMotorPWM[CH_FRONT_LEFT], actualMotorPWM[CH_FRONT_RIGHT], 
+                      actualMotorPWM[CH_REAR_LEFT], actualMotorPWM[CH_REAR_RIGHT]);
     }
 
     delay(1);
@@ -560,6 +641,15 @@ void loop() {
 // ----------------------------------------------------------------------------
 void updateAutonomousMission() {
     unsigned long currentMillis = millis();
+
+    // 0. ESP-NOW Human Attention Override:
+    // If a human is actively paying attention to the robot:
+    // HALT ALL MOTORS IMMEDIATELY and let the person interact!
+    if (espNowAttentionActive) {
+        stopAllMotors("Human Attention Engaged (ESP-NOW)");
+        setMouthAngle(SERVO_ANGLE_OPEN);
+        return;
+    }
 
     switch (autoState) {
         // ---------------------------------------------------------------------
@@ -796,6 +886,15 @@ void parseM5Packet(const String& pkt) {
             m5HumanDetected = (m5PersonCount > 0);
             lastM5Heartbeat = millis();
         }
+    } else if (pkt.startsWith("BINZO:ATTN,")) {
+        // BINZO:ATTN,<flag>,<dwell_sec>,<score>,<h>,<cx>
+        int c1 = pkt.indexOf(',');
+        int c2 = pkt.indexOf(',', c1 + 1);
+        if (c1 != -1 && c2 != -1) {
+            uint8_t flag = pkt.substring(c1 + 1, c2).toInt();
+            espNowAttentionActive = (flag == 1);
+            lastM5Heartbeat = millis();
+        }
     } else if (pkt.startsWith("HUMAN,1")) {
         m5HumanDetected = true;
         m5PersonCount = 1;
@@ -864,12 +963,40 @@ void readLineSensors() {
 }
 
 // ----------------------------------------------------------------------------
-// MOUTH / LID SERVO ACTUATION
+// MOUTH / LID SERVO ACTUATION & TRASH LEVEL POLLING (ESP32 SUPER MINI I2C)
 // ----------------------------------------------------------------------------
 void setMouthAngle(int angle) {
     angle = constrain(angle, 0, 180);
+
+    // 1. Send I2C command to ESP32 Super Mini (Lid Servo on Pin 10)
+    Wire1.beginTransmission(ESP32_MINI_I2C_ADDR);
+    if (angle >= 45) {
+        Wire1.write(0x01); // OPEN LID (95 deg)
+    } else {
+        Wire1.write(0x02); // CLOSE LID (0 deg)
+    }
+    uint8_t err = Wire1.endTransmission();
+    if (err == 0) {
+        esp32MiniFound = true;
+    }
+
+    // 2. Fallback to 4EncoderMotor servo port if present
     if (motorModuleFound) {
         motorDriver.setServoAngle(SERVO_CHANNEL, (uint8_t)angle);
+    }
+    Serial.printf("[LID] Angle: %d deg -> ESP32 Mini (err=%d)\n", angle, err);
+}
+
+void pollTrashLevel() {
+    static unsigned long lastPoll = 0;
+    if (millis() - lastPoll < 200) return;
+    lastPoll = millis();
+
+    uint8_t bytes = Wire1.requestFrom((uint8_t)ESP32_MINI_I2C_ADDR, (uint8_t)2);
+    if (bytes == 2) {
+        trashDistanceCm  = Wire1.read();
+        trashFillPercent = Wire1.read();
+        esp32MiniFound = true;
     }
 }
 
@@ -950,16 +1077,26 @@ void handleTouch() {
     if (M5.Touch.getCount() > 0) {
         auto detail = M5.Touch.getDetail(0);
         if (detail.isPressed()) {
-            // 1. Bottom banner (Y >= 195): Emergency Stop toggle
-            if (detail.y >= 195) {
-                if (now - lastTouchTime > 350) {
+            // 1. Bottom banner (Y >= 192): Manual Lid Toggle (Left) & E-Stop Toggle (Right)
+            if (detail.y >= 192) {
+                if (now - lastTouchTime > 300) {
                     lastTouchTime = now;
-                    isEmergencyStop = !isEmergencyStop;
-                    if (isEmergencyStop) {
-                        stopAllMotors("E-Stop Pressed");
-                        M5.Speaker.tone(1000, 200);
-                    } else {
-                        M5.Speaker.tone(2000, 100);
+                    // Left half (X < 160): Manual Lid Control
+                    if (detail.x < 160) {
+                        isLidManuallyOpen = !isLidManuallyOpen;
+                        setMouthAngle(isLidManuallyOpen ? SERVO_ANGLE_OPEN : SERVO_ANGLE_CLOSED);
+                        M5.Speaker.tone(isLidManuallyOpen ? 2200 : 1400, 80);
+                        Serial.printf("[TOUCH] Manual Lid: %s\n", isLidManuallyOpen ? "OPEN (95 deg)" : "CLOSED (0 deg)");
+                    }
+                    // Right half (X >= 160): Emergency Stop
+                    else {
+                        isEmergencyStop = !isEmergencyStop;
+                        if (isEmergencyStop) {
+                            stopAllMotors("E-Stop Pressed");
+                            M5.Speaker.tone(1000, 200);
+                        } else {
+                            M5.Speaker.tone(2000, 100);
+                        }
                     }
                 }
             }
@@ -1086,10 +1223,11 @@ void processIncomingUDP() {
                 if (thr <= 0 || (thr < 5 && abs(vx) < 5 && abs(vy) < 5 && abs(yaw) < 5)) {
                     stopAllMotors("Neutral Sticks");
                 } else {
+                    int8_t rMul = invertRightMotors ? -1 : 1;
                     applyMotorSpeeds(constrain(m0 * INV_FL, -127, 127),
-                                     constrain(m1 * INV_FR, -127, 127),
+                                     constrain(m1 * INV_FR * rMul, -127, 127),
                                      constrain(m2 * INV_RL, -127, 127),
-                                     constrain(m3 * INV_RR, -127, 127));
+                                     constrain(m3 * INV_RR * rMul, -127, 127));
                 }
             }
         }
@@ -1153,7 +1291,7 @@ void updateDisplay() {
     M5.Display.drawString(isAutonomousMode ? "[AUTO PATROL ACTIVE]" : "[MANUAL RC MODE]", 8, 6);
 
     String netStr = (WiFi.status() == WL_CONNECTED) ? "NET:OK" : (wifiOverridden ? "NET:OVR" : "NET:OFF");
-    String rightStr = "BAT:" + String(M5.Power.getBatteryLevel()) + "% " + netStr + " CAM:" + (isM5CamOnline ? "OK" : "NO");
+    String rightStr = "BIN:" + String(trashFillPercent) + "% " + netStr + " CAM:" + (isM5CamOnline ? "OK" : "NO");
     M5.Display.setTextDatum(top_right);
     M5.Display.drawString(rightStr, 312, 6);
 
@@ -1211,7 +1349,7 @@ void updateDisplay() {
     // Motor Inversion Toggle Button
     M5.Display.fillRoundRect(14, 158, 136, 24, 4, 0x1A2A);
     M5.Display.drawRoundRect(14, 158, 136, 24, 4, 0x4228);
-    M5.Display.setTextColor(invertRightMotors ? COLOR_ORANGE_FAIL : COLOR_GREEN_ARMED);
+    M5.Display.setTextColor(invertRightMotors ? COLOR_GREEN_ARMED : COLOR_ORANGE_FAIL);
     M5.Display.drawString(String("R-MOTORS: ") + (invertRightMotors ? "INVERTED" : "NORMAL"), 82, 170);
 
     // 4. RIGHT CARD: SPEED LIMIT SLIDER (X=164..312, Y=66..190)
@@ -1264,13 +1402,22 @@ void updateDisplay() {
 
     M5.Display.drawString("Drag or tap bar", 238, 174);
 
-    // 5. BOTTOM BAR / TOUCH ACTION BUTTON
-    uint16_t btnColor = isEmergencyStop ? COLOR_GREEN_ARMED : 0x8800;
-    M5.Display.fillRoundRect(8, 196, 304, 28, 5, btnColor);
+    // 5. BOTTOM BAR / TOUCH ACTION BUTTONS (Split: Manual Lid on Left, E-Stop on Right)
+    // Left: Manual Lid Control (X=8..156, W=148, H=28)
+    uint16_t lidBtnCol = isLidManuallyOpen ? COLOR_ACCENT : 0x2235;
+    M5.Display.fillRoundRect(8, 196, 148, 28, 5, lidBtnCol);
+    M5.Display.drawRoundRect(8, 196, 148, 28, 5, 0x53B8);
     M5.Display.setTextDatum(middle_center);
     M5.Display.setFont(&fonts::FreeSansBold9pt7b);
+    M5.Display.setTextColor(isLidManuallyOpen ? BLACK : WHITE);
+    M5.Display.drawString(isLidManuallyOpen ? "LID: OPEN" : "LID: CLOSE", 82, 210);
+
+    // Right: Emergency Stop (X=164..312, W=148, H=28)
+    uint16_t estopCol = isEmergencyStop ? COLOR_GREEN_ARMED : 0x8800;
+    M5.Display.fillRoundRect(164, 196, 148, 28, 5, estopCol);
+    M5.Display.drawRoundRect(164, 196, 148, 28, 5, isEmergencyStop ? 0x07E0 : 0xF800);
     M5.Display.setTextColor(WHITE);
-    M5.Display.drawString(isEmergencyStop ? "TAP TO RESUME" : "[ EMERGENCY STOP ]", 160, 210);
+    M5.Display.drawString(isEmergencyStop ? "RESUME" : "[ E-STOP ]", 238, 210);
 
     // Subtle cl0ud / Ojas Singh attribution footer
     M5.Display.setFont(&fonts::Font0);
