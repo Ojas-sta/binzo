@@ -35,10 +35,10 @@
 // #include "WeMultipleLineFollower.h"
 
 // ----------------------------------------------------------------------------
-// WIFI CONFIGURATION & NETWORK OVERRIDE
+// WIFI CONFIGURATION & NETWORK OVERRIDE (Set your credentials or tap screen for Offline Mode)
 // ----------------------------------------------------------------------------
-const char* WIFI_SSID     = "DPSIDNT";
-const char* WIFI_PASSWORD = "Air@25683";
+const char* WIFI_SSID     = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 bool wifiOverridden       = false;
 
 // ----------------------------------------------------------------------------
